@@ -1,0 +1,7 @@
+[shuttle2]
+a ansible_user=root+c1 ansible_host=shuttle2 ansible_port=2222 ansible_remote_tmp=/tmp/.ansible-${USER}
+b ansible_user=root+u1+ubuntu ansible_host=shuttle2 ansible_port=2222 ansible_remote_tmp=/tmp/.ansible-${USER}
+
+[lxd2]
+c ansible_user=root+c1 ansible_host=lxd2 ansible_remote_tmp=/tmp/.ansible-${USER}
+d ansible_user=root+u1+ubuntu ansible_host=lxd2 ansible_remote_tmp=/tmp/.ansible-${USER} become=yes

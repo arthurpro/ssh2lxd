@@ -1,0 +1,9 @@
+---
+- hosts: shuttle2,lxd2
+  become: no
+  become_method: sudo
+
+  tasks:
+
+    - command: env
+    - command: ip addr

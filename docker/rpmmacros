@@ -1,0 +1,5 @@
+%_topdir      %(echo $HOME)/rpmbuild
+%_sourcedir   %(pwd)
+%_specdir     %{_sourcedir}
+%rpmmacrodir  /usr/lib/rpm/macros.d
+%dist         .el8
