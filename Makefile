@@ -3,6 +3,9 @@ edition ?= ce
 githash ?= $(shell git rev-parse --short HEAD)
 release ?= 0
 
+arch ?=
+archs = amd64 arm64
+
 ifneq ($(githash), "")
 	version = $(shell git describe --exact-match --tags $(githash))
 endif
@@ -24,12 +27,19 @@ licensefile ?= /usr/share/licenses/$(name)/LICENSE
 
 #export GOPATH = /tmp/.go
 #export GOOS = linux
-export GOARCH = amd64
+export GOARCH = $(arch)
 export CGO_ENABLED = 0
+
+#export ARCH = $(shell arch)
 
 RELEASE_DIR := ./release
 
 default: build
+
+cross-release:
+	@for arch in $(archs); do \
+		$(MAKE) release arch=$$arch; \
+	done
 
 v:
 	@echo $(version) $(githash)
@@ -64,7 +74,7 @@ el ubuntu linux:
 		mkdir -p ./build{/bin,/lib/systemd/system,$(shell dirname $(envfile)),$(shell dirname $(docfile)),$(shell dirname $(licensefile))}; \
 		cp packaging/$(name).env ./build$(envfile); \
 	fi
-	@sed -e 's#^EnvironmentFile.*$$#EnvironmentFile=-$(envfile)#' ./packaging/ssh2lxd.service >./build$(servicefile)
+	@sed -e 's#^EnvironmentFile.*$$#EnvironmentFile=-$(envfile)#' ./packaging/$(name).service >./build$(servicefile)
 	@cp README.md ./build$(docfile)
 	@cp LICENSE ./build$(licensefile)
 
@@ -72,11 +82,11 @@ el ubuntu linux:
 		-ldflags="-X 'ssh2lxd.version=$(version)' -X 'ssh2lxd.edition=$(edition)' -X 'ssh2lxd.githash=$(githash)' -X 'ssh2lxd.flagGroups=$(sysgroups)'" \
 		-o ./build$(binfile) \
 		cmd/ssh2lxd/ssh2lxd.go
-	@strip -s ./build$(binfile)
+	@strip ./build$(binfile)
 	@if [[ -x /bin/upx ]]; then \
 		upx ./build/$(binfile); \
 	fi
-	@./build$(binfile) -h
+	#@./build$(binfile) -h
 
 before-release:
 	@mkdir -p $(RELEASE_DIR)
@@ -90,6 +100,7 @@ deb: ubuntu
 
 rpm deb:
 	fpm -s dir -t $@ -C ./build \
+		--architecture $(arch) \
 		--name $(name) \
 		--version $(version) \
 		--iteration $(iteration) \
@@ -105,7 +116,7 @@ rpm deb:
 	@mv *.$@ $(RELEASE_DIR)
 
 tar: linux
-	@tar -C ./build -czf $(RELEASE_DIR)/$(name)-$(version)-$(release)-linux-amd64.tar.gz .
+	@tar -C ./build -czf $(RELEASE_DIR)/$(name)-$(version)-$(release)-linux-$(GOARCH).tar.gz .
 
 upx:
 	upx ./build/$(binfile)

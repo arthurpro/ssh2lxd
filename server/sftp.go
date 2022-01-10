@@ -13,6 +13,8 @@ import (
 
 var sftpServerBins = map[string]string{
 	"alpinelinux": "/usr/lib/ssh/sftp-server",
+	"almalinux":   "/usr/libexec/openssh/sftp-server",
+	"rockylinux":  "/usr/libexec/openssh/sftp-server",
 	"centos":      "/usr/libexec/openssh/sftp-server",
 	"debian":      "/usr/lib/openssh/sftp-server",
 	"fedora":      "/usr/libexec/openssh/sftp-server",

@@ -3,7 +3,7 @@ version: '3.7'
 services:
 
   builder:
-    image: ssh2lxc-builder-alma8
+    image: ssh2lxd-builder
     build: docker
     restart: on-failure
     tty: true
@@ -11,7 +11,3 @@ services:
       - .:/root/build:cached
       - ./docker/bashrc:/root/.bashrc
       - ./docker/rpmmacros:/root/.rpmmacros
-
-#      - ./RPMS:/root/rpmbuild/RPMS
-#      - ./RPMS.old:/root/RPMS
-      - /Users/art/Work/RPM/copr-lxc4/RPMS.old:/root/RPMS
