@@ -1,6 +1,7 @@
 package lxd
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+	log "gopkg.in/inconshreveable/log15.v2"
 	"gopkg.in/macaroon-bakery.v2/httpbakery"
 
 	"github.com/lxc/lxd/shared"
@@ -68,16 +71,32 @@ type ConnectionArgs struct {
 //
 // Unless the remote server is trusted by the system CA, the remote certificate must be provided (TLSServerCert).
 func ConnectLXD(url string, args *ConnectionArgs) (InstanceServer, error) {
-	logger.Debugf("Connecting to a remote LXD over HTTPs")
+	return ConnectLXDWithContext(context.Background(), url, args)
+}
+
+// ConnectLXDWithContext lets you connect to a remote LXD daemon over HTTPs with context.Context.
+//
+// A client certificate (TLSClientCert) and key (TLSClientKey) must be provided.
+//
+// If connecting to a LXD daemon running in PKI mode, the PKI CA (TLSCA) must also be provided.
+//
+// Unless the remote server is trusted by the system CA, the remote certificate must be provided (TLSServerCert).
+func ConnectLXDWithContext(ctx context.Context, url string, args *ConnectionArgs) (InstanceServer, error) {
+	logger.Debugf("Connecting to a remote LXD over HTTPS")
 
 	// Cleanup URL
 	url = strings.TrimSuffix(url, "/")
 
-	return httpsLXD(url, args)
+	return httpsLXD(ctx, url, args)
 }
 
 // ConnectLXDHTTP lets you connect to a VM agent over a VM socket.
 func ConnectLXDHTTP(args *ConnectionArgs, client *http.Client) (InstanceServer, error) {
+	return ConnectLXDHTTPWithContext(context.Background(), args, client)
+}
+
+// ConnectLXDHTTPWithContext lets you connect to a VM agent over a VM socket with context.Context.
+func ConnectLXDHTTPWithContext(ctx context.Context, args *ConnectionArgs, client *http.Client) (InstanceServer, error) {
 	logger.Debugf("Connecting to a VM agent over a VM socket")
 
 	// Use empty args if not specified
@@ -87,10 +106,13 @@ func ConnectLXDHTTP(args *ConnectionArgs, client *http.Client) (InstanceServer, 
 
 	// Initialize the client struct
 	server := ProtocolLXD{
-		httpHost:      "https://custom.socket",
-		httpProtocol:  "custom",
-		httpUserAgent: args.UserAgent,
-		chConnected:   make(chan struct{}, 1),
+		ctx:            ctx,
+		httpHost:       "https://custom.socket",
+		httpProtocol:   "custom",
+		httpUserAgent:  args.UserAgent,
+		chConnected:    make(chan struct{}, 1),
+		eventConns:     make(map[string]*websocket.Conn),
+		eventListeners: make(map[string][]*EventListener),
 	}
 
 	// Setup the HTTP client
@@ -116,6 +138,15 @@ func ConnectLXDHTTP(args *ConnectionArgs, client *http.Client) (InstanceServer, 
 // unset $LXD_DIR/unix.socket will be used and if that one isn't set
 // either, then the path will default to /var/lib/lxd/unix.socket.
 func ConnectLXDUnix(path string, args *ConnectionArgs) (InstanceServer, error) {
+	return ConnectLXDUnixWithContext(context.Background(), path, args)
+}
+
+// ConnectLXDUnixWithContext lets you connect to a remote LXD daemon over a local unix socket with context.Context.
+//
+// If the path argument is empty, then $LXD_SOCKET will be used, if
+// unset $LXD_DIR/unix.socket will be used and if that one isn't set
+// either, then the path will default to /var/lib/lxd/unix.socket.
+func ConnectLXDUnixWithContext(ctx context.Context, path string, args *ConnectionArgs) (InstanceServer, error) {
 	logger.Debugf("Connecting to a local LXD over a Unix socket")
 
 	// Use empty args if not specified
@@ -125,11 +156,14 @@ func ConnectLXDUnix(path string, args *ConnectionArgs) (InstanceServer, error) {
 
 	// Initialize the client struct
 	server := ProtocolLXD{
-		httpHost:      "http://unix.socket",
-		httpUnixPath:  path,
-		httpProtocol:  "unix",
-		httpUserAgent: args.UserAgent,
-		chConnected:   make(chan struct{}, 1),
+		ctx:            ctx,
+		httpHost:       "http://unix.socket",
+		httpUnixPath:   path,
+		httpProtocol:   "unix",
+		httpUserAgent:  args.UserAgent,
+		chConnected:    make(chan struct{}, 1),
+		eventConns:     make(map[string]*websocket.Conn),
+		eventListeners: make(map[string][]*EventListener),
 	}
 
 	// Determine the socket path
@@ -172,19 +206,26 @@ func ConnectLXDUnix(path string, args *ConnectionArgs) (InstanceServer, error) {
 //
 // Unless the remote server is trusted by the system CA, the remote certificate must be provided (TLSServerCert).
 func ConnectPublicLXD(url string, args *ConnectionArgs) (ImageServer, error) {
-	logger.Debugf("Connecting to a remote public LXD over HTTPs")
+	return ConnectPublicLXDWithContext(context.Background(), url, args)
+}
+
+// ConnectPublicLXDWithContext lets you connect to a remote public LXD daemon over HTTPs with context.Context.
+//
+// Unless the remote server is trusted by the system CA, the remote certificate must be provided (TLSServerCert).
+func ConnectPublicLXDWithContext(ctx context.Context, url string, args *ConnectionArgs) (ImageServer, error) {
+	logger.Debugf("Connecting to a remote public LXD over HTTPS")
 
 	// Cleanup URL
 	url = strings.TrimSuffix(url, "/")
 
-	return httpsLXD(url, args)
+	return httpsLXD(ctx, url, args)
 }
 
 // ConnectSimpleStreams lets you connect to a remote SimpleStreams image server over HTTPs.
 //
 // Unless the remote server is trusted by the system CA, the remote certificate must be provided (TLSServerCert).
 func ConnectSimpleStreams(url string, args *ConnectionArgs) (ImageServer, error) {
-	logger.Debugf("Connecting to a remote simplestreams server")
+	logger.Debug("Connecting to a remote simplestreams server", log.Ctx{"URL": url})
 
 	// Cleanup URL
 	url = strings.TrimSuffix(url, "/")
@@ -215,7 +256,7 @@ func ConnectSimpleStreams(url string, args *ConnectionArgs) (ImageServer, error)
 	// Setup the cache
 	if args.CachePath != "" {
 		if !shared.PathExists(args.CachePath) {
-			return nil, fmt.Errorf("Cache directory '%s' doesn't exist", args.CachePath)
+			return nil, fmt.Errorf("Cache directory %q doesn't exist", args.CachePath)
 		}
 
 		hashedURL := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))
@@ -240,7 +281,7 @@ func ConnectSimpleStreams(url string, args *ConnectionArgs) (ImageServer, error)
 }
 
 // Internal function called by ConnectLXD and ConnectPublicLXD
-func httpsLXD(url string, args *ConnectionArgs) (InstanceServer, error) {
+func httpsLXD(ctx context.Context, url string, args *ConnectionArgs) (InstanceServer, error) {
 	// Use empty args if not specified
 	if args == nil {
 		args = &ConnectionArgs{}
@@ -248,12 +289,15 @@ func httpsLXD(url string, args *ConnectionArgs) (InstanceServer, error) {
 
 	// Initialize the client struct
 	server := ProtocolLXD{
+		ctx:              ctx,
 		httpCertificate:  args.TLSServerCert,
 		httpHost:         url,
 		httpProtocol:     "https",
 		httpUserAgent:    args.UserAgent,
 		bakeryInteractor: args.AuthInteractor,
 		chConnected:      make(chan struct{}, 1),
+		eventConns:       make(map[string]*websocket.Conn),
+		eventListeners:   make(map[string][]*EventListener),
 	}
 
 	if args.AuthType == "candid" {

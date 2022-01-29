@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"github.com/kballard/go-shellquote"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
-	"gopkg.in/robfig/cron.v2"
+	"github.com/robfig/cron/v3"
 
 	"github.com/lxc/lxd/shared/osarch"
 	"github.com/lxc/lxd/shared/units"
@@ -83,6 +84,60 @@ func IsUint32(value string) error {
 	return nil
 }
 
+// ParseUint32Range parses a uint32 range in the form "number" or "start-end".
+// Returns the start number and the size of the range.
+func ParseUint32Range(value string) (uint32, uint32, error) {
+	rangeParts := strings.SplitN(value, "-", 2)
+	rangeLen := len(rangeParts)
+	if rangeLen != 1 && rangeLen != 2 {
+		return 0, 0, fmt.Errorf("Range must contain a single number or start and end numbers")
+	}
+
+	startNum, err := strconv.ParseUint(rangeParts[0], 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("Invalid number %q", value)
+	}
+
+	var rangeSize uint32 = 1
+
+	if rangeLen == 2 {
+		endNum, err := strconv.ParseUint(rangeParts[1], 10, 32)
+		if err != nil {
+			return 0, 0, fmt.Errorf("Invalid end number %q", value)
+		}
+
+		if startNum >= endNum {
+			return 0, 0, fmt.Errorf("Start number %d must be lower than end number %d", startNum, endNum)
+		}
+
+		rangeSize += uint32(endNum) - uint32(startNum)
+	}
+
+	return uint32(startNum), rangeSize, nil
+}
+
+// IsUint32Range validates whether the string is a uint32 range in the form "number" or "start-end".
+func IsUint32Range(value string) error {
+	_, _, err := ParseUint32Range(value)
+	return err
+}
+
+// IsInRange checks whether an integer is within a specific range.
+func IsInRange(min int64, max int64) func(value string) error {
+	return func(value string) error {
+		valueInt, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("Invalid value for an integer %q", value)
+		}
+
+		if valueInt < min || valueInt > max {
+			return fmt.Errorf("Value isn't within valid range. Must be between %d and %d", min, max)
+		}
+
+		return nil
+	}
+}
+
 // IsPriority validates priority number.
 func IsPriority(value string) error {
 	valueInt, err := strconv.ParseInt(value, 10, 64)
@@ -107,21 +162,35 @@ func IsBool(value string) error {
 }
 
 // IsOneOf checks whether the string is present in the supplied slice of strings.
-func IsOneOf(value string, valid []string) error {
-	if value == "" {
+func IsOneOf(valid ...string) func(value string) error {
+	return func(value string) error {
+		if !stringInSlice(value, valid) {
+			return fmt.Errorf("Invalid value %q (not one of %s)", value, valid)
+		}
+
 		return nil
 	}
-
-	if !stringInSlice(value, valid) {
-		return fmt.Errorf("Invalid value %q (not one of %s)", value, valid)
-	}
-
-	return nil
 }
 
 // IsAny accepts all strings as valid.
 func IsAny(value string) error {
 	return nil
+}
+
+// IsListOf returns a validator for a comma separated list of values.
+func IsListOf(validator func(value string) error) func(value string) error {
+	return func(value string) error {
+		for _, v := range strings.Split(value, ",") {
+			v = strings.TrimSpace(v)
+
+			err := validator(v)
+			if err != nil {
+				return fmt.Errorf("Item %q: %w", v, err)
+			}
+		}
+
+		return nil
+	}
 }
 
 // IsNotEmpty requires a non-empty string.
@@ -521,32 +590,28 @@ func IsNetworkPort(value string) error {
 	return nil
 }
 
-// IsNetworkPortRange validates an IP port range in the format "start-end".
+// IsNetworkPortRange validates an IP port range in the format "port" or "start-end".
 func IsNetworkPortRange(value string) error {
 	ports := strings.SplitN(value, "-", 2)
-	if len(ports) != 2 {
-		return fmt.Errorf("Port range must contain start and end port numbers")
-	}
-
-	for _, port := range ports {
-		err := IsNetworkPort(port)
-		if err != nil {
-			return err
-		}
+	portsLen := len(ports)
+	if portsLen != 1 && portsLen != 2 {
+		return fmt.Errorf("Port range must contain either a single port or start and end port numbers")
 	}
 
 	startPort, err := strconv.ParseUint(ports[0], 10, 32)
 	if err != nil {
-		return fmt.Errorf("Invalid start port number %q", value)
-	}
-
-	endPort, err := strconv.ParseUint(ports[1], 10, 32)
-	if err != nil {
 		return fmt.Errorf("Invalid port number %q", value)
 	}
 
-	if startPort >= endPort {
-		return fmt.Errorf("Start port %d must be lower than end port %d", startPort, endPort)
+	if portsLen == 2 {
+		endPort, err := strconv.ParseUint(ports[1], 10, 32)
+		if err != nil {
+			return fmt.Errorf("Invalid end port number %q", value)
+		}
+
+		if startPort >= endPort {
+			return fmt.Errorf("Start port %d must be lower than end port %d", startPort, endPort)
+		}
 	}
 
 	return nil
@@ -609,7 +674,7 @@ func IsCompressionAlgorithm(value string) error {
 
 // IsArchitecture validates whether the value is a valid LXD architecture name.
 func IsArchitecture(value string) error {
-	return IsOneOf(value, osarch.SupportedArchitectures())
+	return IsOneOf(osarch.SupportedArchitectures()...)(value)
 }
 
 // IsCron checks that it's a valid cron pattern or alias.
@@ -627,7 +692,7 @@ func IsCron(aliases []string) func(value string) error {
 				return fmt.Errorf("Schedule must be of the form: <minute> <hour> <day-of-month> <month> <day-of-week>")
 			}
 
-			_, err := cron.Parse(fmt.Sprintf("* %s", value))
+			_, err := cron.ParseStandard(value)
 			if err != nil {
 				return errors.Wrap(err, "Error parsing schedule")
 			}
@@ -647,4 +712,93 @@ func IsCron(aliases []string) func(value string) error {
 
 		return nil
 	}
+}
+
+// IsListenAddress returns a validator for a listen address.
+func IsListenAddress(allowDNS bool, allowWildcard bool, requirePort bool) func(value string) error {
+	return func(value string) error {
+		// Validate address format and port.
+		host, _, err := net.SplitHostPort(value)
+		if err != nil {
+			if requirePort {
+				return fmt.Errorf("A port is required as part of the address")
+			}
+
+			host = value
+		}
+
+		// Validate wildcard.
+		if stringInSlice(host, []string{"", "::", "[::]", "0.0.0.0"}) {
+			if !allowWildcard {
+				return fmt.Errorf("Wildcard addresses aren't allowed")
+			}
+
+			return nil
+		}
+
+		// Validate DNS.
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		if ip != nil {
+			return nil
+		}
+
+		if !allowDNS {
+			return fmt.Errorf("DNS names not allowed in address")
+		}
+
+		_, err = net.LookupHost(host)
+		if err != nil {
+			return fmt.Errorf("Couldn't resolve %q", host)
+		}
+
+		return nil
+	}
+}
+
+// IsAbsFilePath checks if value is an absolute file path.
+func IsAbsFilePath(value string) error {
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("Must be absolute file path")
+	}
+
+	return nil
+}
+
+// ParseNetworkVLANRange parses a VLAN range in the form "number" or "start-end".
+// Returns the start number and the number of items in the range.
+func ParseNetworkVLANRange(vlan string) (int, int, error) {
+	err := IsNetworkVLAN(vlan)
+	if err == nil {
+		vlanRangeStart, err := strconv.Atoi(vlan)
+		if err != nil {
+			return -1, -1, err
+		}
+
+		return vlanRangeStart, 1, nil
+	}
+
+	vlanRange := strings.Split(vlan, "-")
+	if len(vlanRange) != 2 {
+		return -1, -1, fmt.Errorf("Invalid VLAN range input: %s", vlan)
+	}
+
+	if IsNetworkVLAN(vlanRange[0]) != nil || IsNetworkVLAN(vlanRange[1]) != nil {
+		return -1, -1, fmt.Errorf("Invalid VLAN range boundary. start:%s, end:%s", vlanRange[0], vlanRange[1])
+	}
+
+	vlanRangeStart, err := strconv.Atoi(vlanRange[0])
+	if err != nil {
+		return -1, -1, err
+	}
+
+	vlanRangeEnd, err := strconv.Atoi(vlanRange[1])
+	if err != nil {
+		return -1, -1, err
+	}
+
+	if vlanRangeStart > vlanRangeEnd {
+		return -1, -1, fmt.Errorf("Invalid VLAN range boundary. start:%d is higher than end:%d", vlanRangeStart, vlanRangeEnd)
+	}
+
+	return vlanRangeStart, vlanRangeEnd - vlanRangeStart + 1, nil
 }

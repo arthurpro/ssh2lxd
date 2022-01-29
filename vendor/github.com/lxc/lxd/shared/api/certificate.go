@@ -6,6 +6,9 @@ const CertificateTypeClient = "client"
 // CertificateTypeServer indicates a server certificate type.
 const CertificateTypeServer = "server"
 
+// CertificateTypeMetrics indicates a metrics certificate type.
+const CertificateTypeMetrics = "metrics"
+
 // CertificateTypeUnknown indicates an unknown certificate type.
 const CertificateTypeUnknown = "unknown"
 
@@ -14,10 +17,6 @@ const CertificateTypeUnknown = "unknown"
 // swagger:model
 type CertificatesPost struct {
 	CertificatePut `yaml:",inline"`
-
-	// The certificate itself, as PEM encoded X509
-	// Example: X509 PEM certificate
-	Certificate string `json:"certificate" yaml:"certificate"`
 
 	// Server trust password (used to add an untrusted client)
 	// Example: blah
@@ -49,6 +48,12 @@ type CertificatePut struct {
 	//
 	// API extension: certificate_project
 	Projects []string `json:"projects" yaml:"projects"`
+
+	// The certificate itself, as PEM encoded X509
+	// Example: X509 PEM certificate
+	//
+	// API extension: certificate_self_renewal
+	Certificate string `json:"certificate" yaml:"certificate"`
 }
 
 // Certificate represents a LXD certificate
@@ -56,11 +61,6 @@ type CertificatePut struct {
 // swagger:model
 type Certificate struct {
 	CertificatePut `yaml:",inline"`
-
-	// The certificate itself, as PEM encoded X509
-	// Read only: true
-	// Example: X509 PEM certificate
-	Certificate string `json:"certificate" yaml:"certificate"`
 
 	// SHA256 fingerprint of the certificate
 	// Read only: true

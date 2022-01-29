@@ -9,15 +9,22 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	log "gopkg.in/inconshreveable/log15.v2"
 
 	"github.com/lxc/lxd/shared/logger"
 )
 
-func RFC3493Dialer(network, address string) (net.Conn, error) {
+// connectErrorPrefix used as prefix to error returned from RFC3493Dialer.
+const connectErrorPrefix = "Unable to connect to"
+
+// RFC3493Dialer connects to the specified server and returns the connection.
+// If the connection cannot be established then an error with the connectErrorPrefix is returned.
+func RFC3493Dialer(network string, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -27,18 +34,29 @@ func RFC3493Dialer(network, address string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	for _, a := range addrs {
 		c, err := net.DialTimeout(network, net.JoinHostPort(a, port), 10*time.Second)
 		if err != nil {
 			continue
 		}
+
 		if tc, ok := c.(*net.TCPConn); ok {
 			tc.SetKeepAlive(true)
 			tc.SetKeepAlivePeriod(3 * time.Second)
 		}
+
 		return c, err
 	}
-	return nil, fmt.Errorf("Unable to connect to: " + address)
+
+	return nil, fmt.Errorf("%s: %s", connectErrorPrefix, address)
+}
+
+// IsConnectionError returns true if the given error is due to the dialer not being able to connect to the target
+// LXD server.
+func IsConnectionError(err error) bool {
+	// FIXME: unfortunately the LXD client currently does not provide a way to differentiate between errors.
+	return strings.Contains(err.Error(), connectErrorPrefix)
 }
 
 // InitTLSConfig returns a tls.Config populated with default encryption
@@ -180,7 +198,7 @@ func WebsocketSendStream(conn *websocket.Conn, r io.Reader, bufferSize int) chan
 
 			err := conn.WriteMessage(websocket.BinaryMessage, buf)
 			if err != nil {
-				logger.Debugf("Got err writing %s", err)
+				logger.Debug("Got err writing", log.Ctx{"err": err})
 				break
 			}
 		}
@@ -198,23 +216,23 @@ func WebsocketRecvStream(w io.Writer, conn *websocket.Conn) chan bool {
 		for {
 			mt, r, err := conn.NextReader()
 			if mt == websocket.CloseMessage {
-				logger.Debugf("Got close message for reader")
+				logger.Debug("WebsocketRecvStream got close message for reader")
 				break
 			}
 
 			if mt == websocket.TextMessage {
-				logger.Debugf("Got message barrier")
+				logger.Debug("WebsocketRecvStream got message barrier")
 				break
 			}
 
 			if err != nil {
-				logger.Debugf("Got error getting next reader %s", err)
+				logger.Debug("WebsocketRecvStream got error getting next reader", log.Ctx{"err": err})
 				break
 			}
 
 			buf, err := ioutil.ReadAll(r)
 			if err != nil {
-				logger.Debugf("Got error writing to writer %s", err)
+				logger.Debug("WebsocketRecvStream got error writing to writer", log.Ctx{"err": err})
 				break
 			}
 
@@ -224,11 +242,11 @@ func WebsocketRecvStream(w io.Writer, conn *websocket.Conn) chan bool {
 
 			i, err := w.Write(buf)
 			if i != len(buf) {
-				logger.Debugf("Didn't write all of buf")
+				logger.Debug("WebsocketRecvStream didn't write all of buf")
 				break
 			}
 			if err != nil {
-				logger.Debugf("Error writing buf %s", err)
+				logger.Debug("WebsocketRecvStream error writing buf", log.Ctx{"err": err})
 				break
 			}
 		}
@@ -238,8 +256,9 @@ func WebsocketRecvStream(w io.Writer, conn *websocket.Conn) chan bool {
 	return ch
 }
 
-func WebsocketProxy(source *websocket.Conn, target *websocket.Conn) chan bool {
-	forward := func(in *websocket.Conn, out *websocket.Conn, ch chan bool) {
+func WebsocketProxy(source *websocket.Conn, target *websocket.Conn) chan struct{} {
+	// Forwarder between two websockets, closes channel upon disconnection.
+	forward := func(in *websocket.Conn, out *websocket.Conn, ch chan struct{}) {
 		for {
 			mt, r, err := in.NextReader()
 			if err != nil {
@@ -258,16 +277,18 @@ func WebsocketProxy(source *websocket.Conn, target *websocket.Conn) chan bool {
 			}
 		}
 
-		ch <- true
+		close(ch)
 	}
 
-	chSend := make(chan bool)
+	// Spawn forwarders in both directions.
+	chSend := make(chan struct{})
 	go forward(source, target, chSend)
 
-	chRecv := make(chan bool)
+	chRecv := make(chan struct{})
 	go forward(target, source, chRecv)
 
-	ch := make(chan bool)
+	// Close main channel and disconnect upon completion of either forwarder.
+	ch := make(chan struct{})
 	go func() {
 		select {
 		case <-chSend:
@@ -277,7 +298,7 @@ func WebsocketProxy(source *websocket.Conn, target *websocket.Conn) chan bool {
 		source.Close()
 		target.Close()
 
-		ch <- true
+		close(ch)
 	}()
 
 	return ch
@@ -293,7 +314,7 @@ func defaultReader(conn *websocket.Conn, r io.ReadCloser, readDone chan<- bool) 
 		buf, ok := <-in
 		if !ok {
 			r.Close()
-			logger.Debugf("Sending write barrier")
+			logger.Debug("Sending write barrier")
 			conn.WriteMessage(websocket.TextMessage, []byte{})
 			readDone <- true
 			return
@@ -301,7 +322,7 @@ func defaultReader(conn *websocket.Conn, r io.ReadCloser, readDone chan<- bool) 
 
 		err := conn.WriteMessage(websocket.BinaryMessage, buf)
 		if err != nil {
-			logger.Debugf("Got err writing %s", err)
+			logger.Debug("Got err writing", log.Ctx{"err": err})
 			break
 		}
 	}
@@ -315,32 +336,32 @@ func DefaultWriter(conn *websocket.Conn, w io.WriteCloser, writeDone chan<- bool
 	for {
 		mt, r, err := conn.NextReader()
 		if err != nil {
-			logger.Debugf("Got error getting next reader %s", err)
+			logger.Debug("DefaultWriter got error getting next reader", log.Ctx{"err": err})
 			break
 		}
 
 		if mt == websocket.CloseMessage {
-			logger.Debugf("Got close message for reader")
+			logger.Debug("DefaultWriter got close message for reader")
 			break
 		}
 
 		if mt == websocket.TextMessage {
-			logger.Debugf("Got message barrier, resetting stream")
+			logger.Debug("DefaultWriter got message barrier, resetting stream")
 			break
 		}
 
 		buf, err := ioutil.ReadAll(r)
 		if err != nil {
-			logger.Debugf("Got error writing to writer %s", err)
+			logger.Debug("DefaultWriter got error writing to writer", log.Ctx{"err": err})
 			break
 		}
 		i, err := w.Write(buf)
 		if i != len(buf) {
-			logger.Debugf("Didn't write all of buf")
+			logger.Debug("DefaultWriter didn't write all of buf")
 			break
 		}
 		if err != nil {
-			logger.Debugf("Error writing buf %s", err)
+			logger.Debug("DefaultWriter error writing buf", log.Ctx{"err": err})
 			break
 		}
 	}

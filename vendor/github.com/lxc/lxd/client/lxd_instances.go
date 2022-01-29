@@ -47,27 +47,48 @@ func (r *ProtocolLXD) instanceTypeToPath(instanceType api.InstanceType) (string,
 
 // GetInstanceNames returns a list of instance names.
 func (r *ProtocolLXD) GetInstanceNames(instanceType api.InstanceType) ([]string, error) {
+	baseURL, v, err := r.instanceTypeToPath(instanceType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the raw URL values.
 	urls := []string{}
+	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", baseURL, v.Encode()), nil, "", &urls)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
+}
+
+// GetInstanceNamesAllProjects returns a list of instance names from all projects.
+func (r *ProtocolLXD) GetInstanceNamesAllProjects(instanceType api.InstanceType) (map[string][]string, error) {
+	instances := []api.Instance{}
 
 	path, v, err := r.instanceTypeToPath(instanceType)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch the raw value
-	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", path, v.Encode()), nil, "", &urls)
+	v.Set("recursion", "1")
+	v.Set("all-projects", "true")
+
+	// Fetch the raw URL values.
+	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", path, v.Encode()), nil, "", &instances)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	names := []string{}
-	prefix := path + "/"
-	for _, url := range urls {
-		fields := strings.Split(url, prefix)
-		names = append(names, fields[len(fields)-1])
+	names := map[string][]string{}
+	for _, instance := range instances {
+		if _, ok := names[instance.Project]; ok {
+			names[instance.Project] = append(names[instance.Project], instance.Name)
+		} else {
+			names[instance.Project] = []string{instance.Name}
+		}
 	}
-
 	return names, nil
 }
 
@@ -81,6 +102,31 @@ func (r *ProtocolLXD) GetInstances(instanceType api.InstanceType) ([]api.Instanc
 	}
 
 	v.Set("recursion", "1")
+
+	// Fetch the raw value
+	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", path, v.Encode()), nil, "", &instances)
+	if err != nil {
+		return nil, err
+	}
+
+	return instances, nil
+}
+
+// GetInstancesAllProjects returns a list of instances from all projects.
+func (r *ProtocolLXD) GetInstancesAllProjects(instanceType api.InstanceType) ([]api.Instance, error) {
+	instances := []api.Instance{}
+
+	path, v, err := r.instanceTypeToPath(instanceType)
+	if err != nil {
+		return nil, err
+	}
+
+	v.Set("recursion", "1")
+	v.Set("all-projects", "true")
+
+	if !r.HasExtension("instance_all_projects") {
+		return nil, fmt.Errorf("The server is missing the required \"instance_all_projects\" API extension")
+	}
 
 	// Fetch the raw value
 	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", path, v.Encode()), nil, "", &instances)
@@ -131,6 +177,35 @@ func (r *ProtocolLXD) GetInstancesFull(instanceType api.InstanceType) ([]api.Ins
 	return instances, nil
 }
 
+// GetInstancesFullAllProjects returns a list of instances including snapshots, backups and state from all projects.
+func (r *ProtocolLXD) GetInstancesFullAllProjects(instanceType api.InstanceType) ([]api.InstanceFull, error) {
+	instances := []api.InstanceFull{}
+
+	path, v, err := r.instanceTypeToPath(instanceType)
+	if err != nil {
+		return nil, err
+	}
+
+	v.Set("recursion", "2")
+	v.Set("all-projects", "true")
+
+	if !r.HasExtension("container_full") {
+		return nil, fmt.Errorf("The server is missing the required \"container_full\" API extension")
+	}
+
+	if !r.HasExtension("instance_all_projects") {
+		return nil, fmt.Errorf("The server is missing the required \"instance_all_projects\" API extension")
+	}
+
+	// Fetch the raw value
+	_, err = r.queryStruct("GET", fmt.Sprintf("%s?%s", path, v.Encode()), nil, "", &instances)
+	if err != nil {
+		return nil, err
+	}
+
+	return instances, nil
+}
+
 // GetInstance returns the instance entry for the provided name.
 func (r *ProtocolLXD) GetInstance(name string) (*api.Instance, string, error) {
 	instance := api.Instance{}
@@ -142,6 +217,54 @@ func (r *ProtocolLXD) GetInstance(name string) (*api.Instance, string, error) {
 
 	// Fetch the raw value
 	etag, err := r.queryStruct("GET", fmt.Sprintf("%s/%s", path, url.PathEscape(name)), nil, "", &instance)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return &instance, etag, nil
+}
+
+// GetInstanceFull returns the instance entry for the provided name along with snapshot information.
+func (r *ProtocolLXD) GetInstanceFull(name string) (*api.InstanceFull, string, error) {
+	instance := api.InstanceFull{}
+
+	if !r.HasExtension("instance_get_full") {
+		// Backware compatibility.
+		ct, _, err := r.GetInstance(name)
+		if err != nil {
+			return nil, "", err
+		}
+
+		cs, _, err := r.GetInstanceState(name)
+		if err != nil {
+			return nil, "", err
+		}
+
+		snaps, err := r.GetInstanceSnapshots(name)
+		if err != nil {
+			return nil, "", err
+		}
+
+		backups, err := r.GetInstanceBackups(name)
+		if err != nil {
+			return nil, "", err
+		}
+
+		instance.Instance = *ct
+		instance.State = cs
+		instance.Snapshots = snaps
+		instance.Backups = backups
+
+		return &instance, "", nil
+	}
+
+	path, _, err := r.instanceTypeToPath(api.InstanceTypeAny)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Fetch the raw value
+	etag, err := r.queryStruct("GET", fmt.Sprintf("%s/%s?recursion=1", path, url.PathEscape(name)), nil, "", &instance)
 	if err != nil {
 		return nil, "", err
 	}
@@ -198,11 +321,6 @@ func (r *ProtocolLXD) CreateInstanceFromBackup(args InstanceBackupArgs) (Operati
 
 	if args.Name != "" {
 		req.Header.Set("X-LXD-name", args.Name)
-	}
-
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
 	}
 
 	// Send the request
@@ -270,7 +388,7 @@ func (r *ProtocolLXD) tryCreateInstance(req api.InstancesPost, urls []string, op
 	// Forward targetOp to remote op
 	go func() {
 		success := false
-		errors := map[string]error{}
+		var errors []remoteOperationResult
 		for _, serverURL := range urls {
 			if operation == "" {
 				req.Source.Server = serverURL
@@ -280,7 +398,7 @@ func (r *ProtocolLXD) tryCreateInstance(req api.InstancesPost, urls []string, op
 
 			op, err := r.CreateInstance(req)
 			if err != nil {
-				errors[serverURL] = err
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
 				continue
 			}
 
@@ -294,8 +412,13 @@ func (r *ProtocolLXD) tryCreateInstance(req api.InstancesPost, urls []string, op
 
 			err = rop.targetOp.Wait()
 			if err != nil {
-				errors[serverURL] = err
-				continue
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
+
+				if shared.IsConnectionError(err) {
+					continue
+				}
+
+				break
 			}
 
 			success = true
@@ -390,7 +513,7 @@ func (r *ProtocolLXD) CopyInstance(source InstanceServer, instance api.Instance,
 
 	// Process the copy arguments
 	if args != nil {
-		// Sanity checks
+		// Quick checks.
 		if args.InstanceOnly {
 			if !r.HasExtension("container_only_migration") {
 				return nil, fmt.Errorf("The target server is missing the required \"container_only_migration\" API extension")
@@ -425,6 +548,12 @@ func (r *ProtocolLXD) CopyInstance(source InstanceServer, instance api.Instance,
 			}
 		}
 
+		if args.AllowInconsistent {
+			if !r.HasExtension("instance_allow_inconsistent_copy") {
+				return nil, fmt.Errorf("The source server is missing the required \"instance_allow_inconsistent_copy\" API extension")
+			}
+		}
+
 		// Allow overriding the target name
 		if args.Name != "" {
 			req.Name = args.Name
@@ -434,6 +563,7 @@ func (r *ProtocolLXD) CopyInstance(source InstanceServer, instance api.Instance,
 		req.Source.InstanceOnly = args.InstanceOnly
 		req.Source.ContainerOnly = args.InstanceOnly // For legacy servers.
 		req.Source.Refresh = args.Refresh
+		req.Source.AllowInconsistent = args.AllowInconsistent
 	}
 
 	if req.Source.Live {
@@ -618,7 +748,7 @@ func (r *ProtocolLXD) RenameInstance(name string, instance api.InstancePost) (Op
 		return nil, err
 	}
 
-	// Sanity check
+	// Quick check.
 	if instance.Migration {
 		return nil, fmt.Errorf("Can't ask for a migration through RenameInstance")
 	}
@@ -646,13 +776,13 @@ func (r *ProtocolLXD) tryMigrateInstance(source InstanceServer, name string, req
 	// Forward targetOp to remote op
 	go func() {
 		success := false
-		errors := map[string]error{}
+		var errors []remoteOperationResult
 		for _, serverURL := range urls {
 			req.Target.Operation = fmt.Sprintf("%s/1.0/operations/%s", serverURL, url.PathEscape(operation))
 
 			op, err := source.MigrateInstance(name, req)
 			if err != nil {
-				errors[serverURL] = err
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
 				continue
 			}
 
@@ -664,8 +794,13 @@ func (r *ProtocolLXD) tryMigrateInstance(source InstanceServer, name string, req
 
 			err = rop.targetOp.Wait()
 			if err != nil {
-				errors[serverURL] = err
-				continue
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
+
+				if shared.IsConnectionError(err) {
+					continue
+				}
+
+				break
 			}
 
 			success = true
@@ -699,7 +834,11 @@ func (r *ProtocolLXD) MigrateInstance(name string, instance api.InstancePost) (O
 		return nil, fmt.Errorf("The server is missing the required \"instance_pool_move\" API extension")
 	}
 
-	// Sanity check
+	if instance.Project != "" && !r.HasExtension("instance_project_move") {
+		return nil, fmt.Errorf("The server is missing the required \"instance_project_move\" API extension")
+	}
+
+	// Quick check.
 	if !instance.Migration {
 		return nil, fmt.Errorf("Can't ask for a rename through MigrateInstance")
 	}
@@ -921,11 +1060,6 @@ func (r *ProtocolLXD) GetInstanceFile(instanceName string, filePath string) (io.
 		return nil, nil, err
 	}
 
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
-
 	// Send the request
 	resp, err := r.do(req)
 	if err != nil {
@@ -1018,11 +1152,6 @@ func (r *ProtocolLXD) CreateInstanceFile(instanceName string, filePath string, a
 		return err
 	}
 
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
-
 	// Set the various headers
 	if args.UID > -1 {
 		req.Header.Set("X-LXD-uid", fmt.Sprintf("%d", args.UID))
@@ -1100,22 +1229,16 @@ func (r *ProtocolLXD) GetInstanceSnapshotNames(instanceName string) ([]string, e
 		return nil, err
 	}
 
+	// Fetch the raw URL values.
 	urls := []string{}
-
-	// Fetch the raw value
-	_, err = r.queryStruct("GET", fmt.Sprintf("%s/%s/snapshots", path, url.PathEscape(instanceName)), nil, "", &urls)
+	baseURL := fmt.Sprintf("%s/%s/snapshots", path, url.PathEscape(instanceName))
+	_, err = r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	names := []string{}
-	for _, uri := range urls {
-		fields := strings.Split(uri, fmt.Sprintf("%s/%s/snapshots/", path, url.PathEscape(instanceName)))
-		names = append(names, fields[len(fields)-1])
-	}
-
-	return names, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetInstanceSnapshots returns a list of snapshots for the instance.
@@ -1205,7 +1328,7 @@ func (r *ProtocolLXD) CopyInstanceSnapshot(source InstanceServer, instanceName s
 
 	// Process the copy arguments
 	if args != nil {
-		// Sanity checks
+		// Quick checks.
 		if shared.StringInSlice(args.Mode, []string{"push", "relay"}) {
 			if !r.HasExtension("container_push") {
 				return nil, fmt.Errorf("The target server is missing the required \"container_push\" API extension")
@@ -1402,7 +1525,7 @@ func (r *ProtocolLXD) RenameInstanceSnapshot(instanceName string, name string, i
 		return nil, err
 	}
 
-	// Sanity check
+	// Quick check.
 	if instance.Migration {
 		return nil, fmt.Errorf("Can't ask for a migration through RenameInstanceSnapshot")
 	}
@@ -1430,13 +1553,13 @@ func (r *ProtocolLXD) tryMigrateInstanceSnapshot(source InstanceServer, instance
 	// Forward targetOp to remote op
 	go func() {
 		success := false
-		errors := map[string]error{}
+		var errors []remoteOperationResult
 		for _, serverURL := range urls {
 			req.Target.Operation = fmt.Sprintf("%s/1.0/operations/%s", serverURL, url.PathEscape(operation))
 
 			op, err := source.MigrateInstanceSnapshot(instanceName, name, req)
 			if err != nil {
-				errors[serverURL] = err
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
 				continue
 			}
 
@@ -1448,8 +1571,13 @@ func (r *ProtocolLXD) tryMigrateInstanceSnapshot(source InstanceServer, instance
 
 			err = rop.targetOp.Wait()
 			if err != nil {
-				errors[serverURL] = err
-				continue
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
+
+				if shared.IsConnectionError(err) {
+					continue
+				}
+
+				break
 			}
 
 			success = true
@@ -1473,7 +1601,7 @@ func (r *ProtocolLXD) MigrateInstanceSnapshot(instanceName string, name string, 
 		return nil, err
 	}
 
-	// Sanity check
+	// Quick check.
 	if !instance.Migration {
 		return nil, fmt.Errorf("Can't ask for a rename through MigrateInstanceSnapshot")
 	}
@@ -1572,22 +1700,16 @@ func (r *ProtocolLXD) GetInstanceLogfiles(name string) ([]string, error) {
 		return nil, err
 	}
 
+	// Fetch the raw URL values.
 	urls := []string{}
-
-	// Fetch the raw value
-	_, err = r.queryStruct("GET", fmt.Sprintf("%s/%s/logs", path, url.PathEscape(name)), nil, "", &urls)
+	baseURL := fmt.Sprintf("%s/%s/logs", path, url.PathEscape(name))
+	_, err = r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	logfiles := make([]string, 0, len(urls))
-	for _, uri := range urls {
-		fields := strings.Split(uri, fmt.Sprintf("%s/%s/logs/", path, url.PathEscape(name)))
-		logfiles = append(logfiles, fields[len(fields)-1])
-	}
-
-	return logfiles, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetInstanceLogfile returns the content of the requested logfile.
@@ -1610,11 +1732,6 @@ func (r *ProtocolLXD) GetInstanceLogfile(name string, filename string) (io.ReadC
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
 	}
 
 	// Send the request
@@ -1737,11 +1854,6 @@ func (r *ProtocolLXD) GetInstanceTemplateFile(instanceName string, templateName 
 		return nil, err
 	}
 
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
-
 	// Send the request
 	resp, err := r.do(req)
 	if err != nil {
@@ -1782,11 +1894,6 @@ func (r *ProtocolLXD) CreateInstanceTemplateFile(instanceName string, templateNa
 		return err
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
-
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
 
 	// Send the request
 	resp, err := r.do(req)
@@ -2011,11 +2118,6 @@ func (r *ProtocolLXD) GetInstanceConsoleLog(instanceName string, args *InstanceC
 		return nil, err
 	}
 
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
-
 	// Send the request
 	resp, err := r.do(req)
 	if err != nil {
@@ -2055,30 +2157,25 @@ func (r *ProtocolLXD) DeleteInstanceConsoleLog(instanceName string, args *Instan
 
 // GetInstanceBackupNames returns a list of backup names for the instance.
 func (r *ProtocolLXD) GetInstanceBackupNames(instanceName string) ([]string, error) {
+	if !r.HasExtension("container_backup") {
+		return nil, fmt.Errorf("The server is missing the required \"container_backup\" API extension")
+	}
+
 	path, _, err := r.instanceTypeToPath(api.InstanceTypeAny)
 	if err != nil {
 		return nil, err
 	}
 
-	if !r.HasExtension("container_backup") {
-		return nil, fmt.Errorf("The server is missing the required \"container_backup\" API extension")
-	}
-
-	// Fetch the raw value
+	// Fetch the raw URL values.
 	urls := []string{}
-	_, err = r.queryStruct("GET", fmt.Sprintf("%s/%s/backups", path, url.PathEscape(instanceName)), nil, "", &urls)
+	baseURL := fmt.Sprintf("%s/%s/backups", path, url.PathEscape(instanceName))
+	_, err = r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	names := []string{}
-	for _, uri := range urls {
-		fields := strings.Split(uri, fmt.Sprintf("%s/%s/backups/", path, url.PathEscape(instanceName)))
-		names = append(names, fields[len(fields)-1])
-	}
-
-	return names, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetInstanceBackups returns a list of backups for the instance.
@@ -2252,7 +2349,7 @@ func (r *ProtocolLXD) GetInstanceBackupFile(instanceName string, name string, re
 }
 
 func (r *ProtocolLXD) proxyMigration(targetOp *operation, targetSecrets map[string]string, source InstanceServer, sourceOp *operation, sourceSecrets map[string]string) error {
-	// Sanity checks
+	// Quick checks.
 	for n := range targetSecrets {
 		_, ok := sourceSecrets[n]
 		if !ok {
@@ -2266,7 +2363,7 @@ func (r *ProtocolLXD) proxyMigration(targetOp *operation, targetSecrets map[stri
 
 	// Struct used to hold everything together
 	type proxy struct {
-		done       chan bool
+		done       chan struct{}
 		sourceConn *websocket.Conn
 		targetConn *websocket.Conn
 	}

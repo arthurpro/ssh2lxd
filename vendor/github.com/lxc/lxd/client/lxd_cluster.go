@@ -2,7 +2,6 @@ package lxd
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/lxc/lxd/shared/api"
 )
@@ -70,20 +69,16 @@ func (r *ProtocolLXD) GetClusterMemberNames() ([]string, error) {
 		return nil, fmt.Errorf("The server is missing the required \"clustering\" API extension")
 	}
 
+	// Fetch the raw URL values.
 	urls := []string{}
-	_, err := r.queryStruct("GET", "/cluster/members", nil, "", &urls)
+	baseURL := "/cluster/members"
+	_, err := r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	names := []string{}
-	for _, url := range urls {
-		fields := strings.Split(url, "/cluster/members/")
-		names = append(names, fields[len(fields)-1])
-	}
-
-	return names, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetClusterMembers returns the current members of the cluster
@@ -148,4 +143,151 @@ func (r *ProtocolLXD) RenameClusterMember(name string, member api.ClusterMemberP
 	}
 
 	return nil
+}
+
+// CreateClusterMember generates a join token to add a cluster member.
+func (r *ProtocolLXD) CreateClusterMember(member api.ClusterMembersPost) (Operation, error) {
+	if !r.HasExtension("clustering_join_token") {
+		return nil, fmt.Errorf("The server is missing the required \"clustering_join_token\" API extension")
+	}
+
+	op, _, err := r.queryOperation("POST", "/cluster/members", member, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return op, nil
+}
+
+// UpdateClusterCertificate updates the cluster certificate for every node in the cluster
+func (r *ProtocolLXD) UpdateClusterCertificate(certs api.ClusterCertificatePut, ETag string) error {
+	if !r.HasExtension("clustering_update_cert") {
+		return fmt.Errorf("The server is missing the required \"clustering_update_cert\" API extension")
+	}
+
+	_, _, err := r.query("PUT", "/cluster/certificate", certs, ETag)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UpdateClusterMemberState evacuates or restores a cluster member.
+func (r *ProtocolLXD) UpdateClusterMemberState(name string, state api.ClusterMemberStatePost) (Operation, error) {
+	if !r.HasExtension("clustering_evacuation") {
+		return nil, fmt.Errorf("The server is missing the required \"clustering_evacuation\" API extension")
+	}
+
+	op, _, err := r.queryOperation("POST", fmt.Sprintf("/cluster/members/%s/state", name), state, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return op, nil
+}
+
+// GetClusterGroups returns the cluster groups.
+func (r *ProtocolLXD) GetClusterGroups() ([]api.ClusterGroup, error) {
+	if !r.HasExtension("clustering_groups") {
+		return nil, fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	groups := []api.ClusterGroup{}
+
+	_, err := r.queryStruct("GET", "/cluster/groups?recursion=1", nil, "", &groups)
+	if err != nil {
+		return nil, err
+	}
+
+	return groups, nil
+}
+
+// GetClusterGroupNames returns the cluster group names.
+func (r *ProtocolLXD) GetClusterGroupNames() ([]string, error) {
+	if !r.HasExtension("clustering_groups") {
+		return nil, fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	urls := []string{}
+
+	_, err := r.queryStruct("GET", "/cluster/groups", nil, "", &urls)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse it.
+	return urlsToResourceNames("/1.0/cluster/groups", urls...)
+}
+
+// RenameClusterGroup changes the name of an existing cluster group.
+func (r *ProtocolLXD) RenameClusterGroup(name string, group api.ClusterGroupPost) error {
+	if !r.HasExtension("clustering_groups") {
+		return fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	_, _, err := r.query("POST", fmt.Sprintf("/cluster/groups/%s", name), group, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// CreateClusterGroup creates a new cluster group.
+func (r *ProtocolLXD) CreateClusterGroup(group api.ClusterGroupsPost) error {
+	if !r.HasExtension("clustering_groups") {
+		return fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	_, _, err := r.query("POST", "/cluster/groups", group, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// DeleteClusterGroup deletes an existing cluster group.
+func (r *ProtocolLXD) DeleteClusterGroup(name string) error {
+	if !r.HasExtension("clustering_groups") {
+		return fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	_, _, err := r.query("DELETE", fmt.Sprintf("/cluster/groups/%s", name), nil, "")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UpdateClusterGroup updates information about the given cluster group.
+func (r *ProtocolLXD) UpdateClusterGroup(name string, group api.ClusterGroupPut, ETag string) error {
+	if !r.HasExtension("clustering_groups") {
+		return fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	// Send the request
+	_, _, err := r.query("PUT", fmt.Sprintf("/cluster/groups/%s", name), group, ETag)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GetClusterGroup returns information about the given cluster group.
+func (r *ProtocolLXD) GetClusterGroup(name string) (*api.ClusterGroup, string, error) {
+	if !r.HasExtension("clustering_groups") {
+		return nil, "", fmt.Errorf("The server is missing the required \"clustering_groups\" API extension")
+	}
+
+	group := api.ClusterGroup{}
+	etag, err := r.queryStruct("GET", fmt.Sprintf("/cluster/groups/%s", name), nil, "", &group)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return &group, etag, nil
 }

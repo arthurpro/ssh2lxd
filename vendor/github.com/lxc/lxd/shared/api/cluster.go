@@ -1,5 +1,10 @@
 package api
 
+import (
+	"encoding/base64"
+	"encoding/json"
+)
+
 // Cluster represents high-level information about a LXD cluster.
 //
 // swagger:model
@@ -83,6 +88,50 @@ type ClusterPut struct {
 	ClusterPassword string `json:"cluster_password" yaml:"cluster_password"`
 }
 
+// ClusterMembersPost represents the fields required to request a join token to add a member to the cluster.
+//
+// swagger:model
+//
+// API extension: clustering_join_token
+type ClusterMembersPost struct {
+	// The name of the new cluster member
+	// Example: lxd02
+	ServerName string `json:"server_name" yaml:"server_name"`
+}
+
+// ClusterMemberJoinToken represents the fields contained within an encoded cluster member join token.
+//
+// swagger:model
+//
+// API extension: clustering_join_token
+type ClusterMemberJoinToken struct {
+	// The name of the new cluster member
+	// Example: lxd02
+	ServerName string `json:"server_name" yaml:"server_name"`
+
+	// The fingerprint of the network certificate
+	// Example: 57bb0ff4340b5bb28517e062023101adf788c37846dc8b619eb2c3cb4ef29436
+	Fingerprint string `json:"fingerprint" yaml:"fingerprint"`
+
+	// The addresses of existing online cluster members
+	// Example: ["10.98.30.229:8443"]
+	Addresses []string `json:"addresses" yaml:"addresses"`
+
+	// The random join secret.
+	// Example: 2b2284d44db32675923fe0d2020477e0e9be11801ff70c435e032b97028c35cd
+	Secret string `json:"secret" yaml:"secret"`
+}
+
+// String encodes the cluster member join token as JSON and then Base64.
+func (t *ClusterMemberJoinToken) String() string {
+	joinTokenJSON, err := json.Marshal(t)
+	if err != nil {
+		return ""
+	}
+
+	return base64.StdEncoding.EncodeToString(joinTokenJSON)
+}
+
 // ClusterMemberPost represents the fields required to rename a LXD node.
 //
 // swagger:model
@@ -151,4 +200,102 @@ type ClusterMemberPut struct {
 	//
 	// API extension: clustering_failure_domains
 	FailureDomain string `json:"failure_domain" yaml:"failure_domain"`
+
+	// Cluster member description
+	// Example: AMD Epyc 32c/64t
+	//
+	// API extension: clustering_description
+	Description string `json:"description" yaml:"description"`
+
+	// Additional configuration information
+	// Example: {"scheduler.instance": "all"}
+	//
+	// API extension: clustering_config
+	Config map[string]string `json:"config" yaml:"config"`
+
+	// List of cluster groups this member belongs to
+	// Example: ["group1", "group2"]
+	//
+	// API extension: clustering_groups
+	Groups []string `json:"groups" yaml:"groups"`
+}
+
+// ClusterCertificatePut represents the certificate and key pair for all members in a LXD Cluster
+//
+// swagger:model
+//
+// API extension: clustering_update_certs
+type ClusterCertificatePut struct {
+	// The new certificate (X509 PEM encoded) for the cluster
+	// Example: X509 PEM certificate
+	ClusterCertificate string `json:"cluster_certificate" yaml:"cluster_certificate"`
+
+	// The new certificate key (X509 PEM encoded) for the cluster
+	// Example: X509 PEM certificate key
+	ClusterCertificateKey string `json:"cluster_certificate_key" yaml:"cluster_certificate_key"`
+}
+
+// ClusterMemberStatePost represents the fields required to evacuate a cluster member.
+//
+// swagger:model
+//
+// API extension: clustering_evacuation
+type ClusterMemberStatePost struct {
+	// The action to be performed. Valid actions are "evacuate" and "restore".
+	// Example: evacuate
+	Action string `json:"action" yaml:"action"`
+}
+
+// ClusterGroupsPost represents the fields available for a new cluster group.
+//
+// swagger:model
+//
+// API extension: clustering_groups
+type ClusterGroupsPost struct {
+	ClusterGroupPut
+
+	// The new name of the cluster group
+	// Example: group1
+	Name string `json:"name" yaml:"name"`
+}
+
+// ClusterGroup represents a cluster group.
+//
+// swagger:model
+//
+// API extension: clustering_groups
+type ClusterGroup struct {
+	ClusterGroupPut  `yaml:",inline"`
+	ClusterGroupPost `yaml:",inline"`
+}
+
+// ClusterGroupPost represents the fields required to rename a cluster group.
+//
+// swagger:model
+//
+// API extension: clustering_groups
+type ClusterGroupPost struct {
+	// The new name of the cluster group
+	// Example: group1
+	Name string `json:"name" yaml:"name"`
+}
+
+// ClusterGroupPut represents the modifiable fields of a cluster group.
+//
+// swagger:model
+//
+// API extension: clustering_groups
+type ClusterGroupPut struct {
+	// The description of the cluster group
+	// Example: amd64 servers
+	Description string `json:"description" yaml:"description"`
+
+	// List of members in this group
+	// Example: ["node1", "node3"]
+	Members []string `json:"members" yaml:"members"`
+}
+
+// Writable converts a full ClusterGroup struct into a ClusterGroupPut struct (filters read-only fields)
+func (c *ClusterGroup) Writable() ClusterGroupPut {
+	return c.ClusterGroupPut
 }

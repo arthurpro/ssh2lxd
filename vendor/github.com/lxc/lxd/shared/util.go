@@ -3,6 +3,7 @@ package shared
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/gob"
 	"encoding/hex"
@@ -32,7 +33,9 @@ import (
 )
 
 const SnapshotDelimiter = "/"
-const DefaultPort = 8443
+const HTTPSDefaultPort = 8443
+const HTTPDefaultPort = 8080
+const HTTPSMetricsDefaultPort = 9100
 
 // URLEncode encodes a path and query parameters to a URL.
 func URLEncode(path string, query map[string]string) (string, error) {
@@ -652,6 +655,10 @@ func IsTrue(value string) bool {
 	return StringInSlice(strings.ToLower(value), []string{"true", "1", "yes", "on"})
 }
 
+func IsFalse(value string) bool {
+	return StringInSlice(strings.ToLower(value), []string{"false", "0", "no", "off"})
+}
+
 func IsUserConfig(key string) bool {
 	return strings.HasPrefix(key, "user.")
 }
@@ -665,20 +672,6 @@ func StringMapHasStringKey(m map[string]string, keys ...string) bool {
 	}
 
 	return false
-}
-
-func IsUnixDev(path string) bool {
-	stat, err := os.Stat(path)
-	if err != nil {
-		return false
-
-	}
-
-	if (stat.Mode() & os.ModeDevice) == 0 {
-		return false
-	}
-
-	return true
 }
 
 func IsBlockdev(fm os.FileMode) bool {
@@ -952,7 +945,8 @@ func RunCommandWithFds(stdin io.Reader, stdout io.Writer, name string, arg ...st
 		err := RunError{
 			msg: fmt.Sprintf("Failed to run: %s %s: %s", name, strings.Join(arg, " "),
 				strings.TrimSpace(buffer.String())),
-			Err: err,
+			Err:    err,
+			Stderr: buffer.String(),
 		}
 
 		return err
@@ -1028,12 +1022,19 @@ func SetProgressMetadata(metadata map[string]interface{}, stage, displayPrefix s
 	}
 }
 
-func DownloadFileHash(httpClient *http.Client, useragent string, progress func(progress ioprogress.ProgressData), canceler *cancel.Canceler, filename string, url string, hash string, hashFunc hash.Hash, target io.WriteSeeker) (int64, error) {
+func DownloadFileHash(ctx context.Context, httpClient *http.Client, useragent string, progress func(progress ioprogress.ProgressData), canceler *cancel.Canceler, filename string, url string, hash string, hashFunc hash.Hash, target io.WriteSeeker) (int64, error) {
 	// Always seek to the beginning
 	target.Seek(0, 0)
 
+	var req *http.Request
+	var err error
+
 	// Prepare the download request
-	req, err := http.NewRequest("GET", url, nil)
+	if ctx != nil {
+		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
+	} else {
+		req, err = http.NewRequest("GET", url, nil)
+	}
 	if err != nil {
 		return -1, err
 	}

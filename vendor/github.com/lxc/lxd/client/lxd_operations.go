@@ -3,7 +3,6 @@ package lxd
 import (
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -12,22 +11,16 @@ import (
 
 // GetOperationUUIDs returns a list of operation uuids
 func (r *ProtocolLXD) GetOperationUUIDs() ([]string, error) {
+	// Fetch the raw URL values.
 	urls := []string{}
-
-	// Fetch the raw value
-	_, err := r.queryStruct("GET", "/operations", nil, "", &urls)
+	baseURL := "/operations"
+	_, err := r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	uuids := []string{}
-	for _, url := range urls {
-		fields := strings.Split(url, "/operations/")
-		uuids = append(uuids, fields[len(fields)-1])
-	}
-
-	return uuids, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetOperations returns a list of Operation struct
@@ -43,9 +36,7 @@ func (r *ProtocolLXD) GetOperations() ([]api.Operation, error) {
 	// Turn it into just a list of operations
 	operations := []api.Operation{}
 	for _, v := range apiOperations {
-		for _, operation := range v {
-			operations = append(operations, operation)
-		}
+		operations = append(operations, v...)
 	}
 
 	return operations, nil

@@ -2,8 +2,8 @@ package lxd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,10 +23,18 @@ import (
 
 // ProtocolLXD represents a LXD API server
 type ProtocolLXD struct {
+	ctx         context.Context
 	server      *api.Server
 	chConnected chan struct{}
 
-	eventListeners     []*EventListener
+	// eventConns contains event listener connections associated to a project name (or empty for all projects).
+	eventConns map[string]*websocket.Conn
+
+	// eventConnsLock controls write access to the eventConns.
+	eventConnsLock sync.Mutex
+
+	// eventListeners is a slice of event listeners associated to a project name (or empty for all projects).
+	eventListeners     map[string][]*EventListener
 	eventListenersLock sync.Mutex
 
 	http            *http.Client
@@ -96,6 +104,12 @@ func (r *ProtocolLXD) GetHTTPClient() (*http.Client, error) {
 
 // Do performs a Request, using macaroon authentication if set.
 func (r *ProtocolLXD) do(req *http.Request) (*http.Response, error) {
+	// Set the user agent
+	if r.httpUserAgent != "" {
+		req.Header.Set("User-Agent", r.httpUserAgent)
+	}
+
+	// Send the request through
 	if r.bakeryClient != nil {
 		r.addMacaroonHeaders(req)
 		return r.bakeryClient.Do(req)
@@ -161,7 +175,7 @@ func lxdParseResponse(resp *http.Response) (*api.Response, string, error) {
 
 	// Handle errors
 	if response.Type == api.ErrorResponse {
-		return nil, "", errors.New(response.Error)
+		return nil, "", api.StatusErrorf(resp.StatusCode, response.Error)
 	}
 
 	return &response, etag, nil
@@ -183,7 +197,7 @@ func (r *ProtocolLXD) rawQuery(method string, url string, data interface{}, ETag
 		switch data := data.(type) {
 		case io.Reader:
 			// Some data to be sent along with the request
-			req, err = http.NewRequest(method, url, data)
+			req, err = http.NewRequestWithContext(r.ctx, method, url, data)
 			if err != nil {
 				return nil, "", err
 			}
@@ -200,7 +214,7 @@ func (r *ProtocolLXD) rawQuery(method string, url string, data interface{}, ETag
 
 			// Some data to be sent along with the request
 			// Use a reader since the request body needs to be seekable
-			req, err = http.NewRequest(method, url, bytes.NewReader(buf.Bytes()))
+			req, err = http.NewRequestWithContext(r.ctx, method, url, bytes.NewReader(buf.Bytes()))
 			if err != nil {
 				return nil, "", err
 			}
@@ -213,15 +227,10 @@ func (r *ProtocolLXD) rawQuery(method string, url string, data interface{}, ETag
 		}
 	} else {
 		// No data to be sent along with the request
-		req, err = http.NewRequest(method, url, nil)
+		req, err = http.NewRequestWithContext(r.ctx, method, url, nil)
 		if err != nil {
 			return nil, "", err
 		}
-	}
-
-	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
 	}
 
 	// Set the ETag
@@ -260,7 +269,7 @@ func (r *ProtocolLXD) setQueryAttributes(uri string) (string, error) {
 	}
 
 	if r.project != "" {
-		if values.Get("project") == "" {
+		if values.Get("project") == "" && values.Get("all-projects") == "" {
 			values.Set("project", r.project)
 		}
 	}
@@ -349,6 +358,7 @@ func (r *ProtocolLXD) rawWebsocket(url string) (*websocket.Conn, error) {
 
 	// Setup a new websocket dialer based on it
 	dialer := websocket.Dialer{
+		//lint:ignore SA1019 DialContext doesn't exist in Go 1.13
 		NetDial:         httpTransport.Dial,
 		TLSClientConfig: httpTransport.TLSClientConfig,
 		Proxy:           httpTransport.Proxy,
@@ -406,4 +416,11 @@ func (r *ProtocolLXD) setupBakeryClient() {
 			r.bakeryClient.AddInteractor(interactor)
 		}
 	}
+}
+
+// WithContext returns a client that will add context.Context.
+func (r *ProtocolLXD) WithContext(ctx context.Context) InstanceServer {
+	rr := r
+	rr.ctx = ctx
+	return rr
 }

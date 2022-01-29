@@ -35,22 +35,16 @@ func (r *ProtocolLXD) GetImages() ([]api.Image, error) {
 
 // GetImageFingerprints returns a list of available image fingerprints
 func (r *ProtocolLXD) GetImageFingerprints() ([]string, error) {
+	// Fetch the raw URL values.
 	urls := []string{}
-
-	// Fetch the raw value
-	_, err := r.queryStruct("GET", "/images", nil, "", &urls)
+	baseURL := "/images"
+	_, err := r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	fingerprints := []string{}
-	for _, url := range urls {
-		fields := strings.Split(url, "/images/")
-		fingerprints = append(fingerprints, fields[len(fields)-1])
-	}
-
-	return fingerprints, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetImage returns an Image struct for the provided fingerprint
@@ -104,7 +98,7 @@ func (r *ProtocolLXD) GetPrivateImage(fingerprint string, secret string) (*api.I
 
 // GetPrivateImageFile is similar to GetImageFile but allows passing a secret download token
 func (r *ProtocolLXD) GetPrivateImageFile(fingerprint string, secret string, req ImageFileRequest) (*ImageFileResponse, error) {
-	// Sanity checks
+	// Quick checks.
 	if req.MetaFile == nil && req.RootfsFile == nil {
 		return nil, fmt.Errorf("No file requested")
 	}
@@ -298,22 +292,16 @@ func (r *ProtocolLXD) GetImageAliases() ([]api.ImageAliasesEntry, error) {
 
 // GetImageAliasNames returns the list of available alias names
 func (r *ProtocolLXD) GetImageAliasNames() ([]string, error) {
+	// Fetch the raw URL values.
 	urls := []string{}
-
-	// Fetch the raw value
-	_, err := r.queryStruct("GET", "/images/aliases", nil, "", &urls)
+	baseURL := "/images/aliases"
+	_, err := r.queryStruct("GET", baseURL, nil, "", &urls)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse it
-	names := []string{}
-	for _, url := range urls {
-		fields := strings.Split(url, "/images/aliases/")
-		names = append(names, fields[len(fields)-1])
-	}
-
-	return names, nil
+	// Parse it.
+	return urlsToResourceNames(baseURL, urls...)
 }
 
 // GetImageAlias returns an existing alias as an ImageAliasesEntry struct
@@ -496,10 +484,6 @@ func (r *ProtocolLXD) CreateImage(image api.ImagesPost, args *ImageCreateArgs) (
 	}
 
 	// Set the user agent
-	if r.httpUserAgent != "" {
-		req.Header.Set("User-Agent", r.httpUserAgent)
-	}
-
 	if image.Source != nil && image.Source.Fingerprint != "" && image.Source.Secret != "" && image.Source.Mode == "push" {
 		// Set fingerprint
 		req.Header.Set("X-LXD-fingerprint", image.Source.Fingerprint)
@@ -583,13 +567,13 @@ func (r *ProtocolLXD) tryCopyImage(req api.ImagesPost, urls []string) (RemoteOpe
 	// Forward targetOp to remote op
 	go func() {
 		success := false
-		errors := map[string]error{}
+		var errors []remoteOperationResult
 		for _, serverURL := range urls {
 			req.Source.Server = serverURL
 
 			op, err := r.CreateImage(req, nil)
 			if err != nil {
-				errors[serverURL] = err
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
 				continue
 			}
 
@@ -603,8 +587,13 @@ func (r *ProtocolLXD) tryCopyImage(req api.ImagesPost, urls []string) (RemoteOpe
 
 			err = rop.targetOp.Wait()
 			if err != nil {
-				errors[serverURL] = err
-				continue
+				errors = append(errors, remoteOperationResult{URL: serverURL, Error: err})
+
+				if shared.IsConnectionError(err) {
+					continue
+				}
+
+				break
 			}
 
 			success = true
@@ -623,7 +612,7 @@ func (r *ProtocolLXD) tryCopyImage(req api.ImagesPost, urls []string) (RemoteOpe
 
 // CopyImage copies an image from a remote server. Additional options can be passed using ImageCopyArgs
 func (r *ProtocolLXD) CopyImage(source ImageServer, image api.Image, args *ImageCopyArgs) (RemoteOperation, error) {
-	// Sanity checks
+	// Quick checks.
 	if r == source {
 		return nil, fmt.Errorf("The source and target servers must be different")
 	}
@@ -798,6 +787,7 @@ func (r *ProtocolLXD) CopyImage(source ImageServer, image api.Image, args *Image
 			Fingerprint: image.Fingerprint,
 			Mode:        "pull",
 			Type:        "image",
+			Project:     info.Project,
 		},
 	}
 
